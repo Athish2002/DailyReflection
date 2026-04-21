@@ -1,0 +1,914 @@
+{
+  "meta": {
+    "version": "1.0.0",
+    "name": "The Daily Reflection Tree",
+    "description": "A fully deterministic end-of-day reflection tool. No LLM is used at runtime. Every conversation path is determined entirely by the employee's selections. Same answers always produce the same path and the same reflection.",
+    "axes": [
+      {
+        "id": "axis1",
+        "name": "Locus",
+        "spectrum": "Victim \u2194 Victor",
+        "poles": {
+          "internal": "Sees their own agency in how today unfolded \u2014 owns their response to events",
+          "external": "Sees today as driven by forces outside their control \u2014 circumstance, others, luck"
+        },
+        "sources": [
+          "Rotter, J.B. (1954). Social learning and clinical psychology. Englewood Cliffs, NJ: Prentice-Hall.",
+          "Dweck, C.S. (2006). Mindset: The New Psychology of Success. Random House."
+        ]
+      },
+      {
+        "id": "axis2",
+        "name": "Orientation",
+        "spectrum": "Entitlement \u2194 Contribution",
+        "poles": {
+          "contribution": "Frame oriented around what they gave \u2014 discretionary effort, help, initiative",
+          "entitlement": "Frame oriented around what they were owed \u2014 recognition, fairness, reciprocity"
+        },
+        "sources": [
+          "Campbell, W.K. et al. (2004). Psychological entitlement. Journal of Personality and Social Psychology.",
+          "Organ, D.W. (1988). Organizational citizenship behavior: The good soldier syndrome. Lexington Books."
+        ]
+      },
+      {
+        "id": "axis3",
+        "name": "Radius",
+        "spectrum": "Self-Centrism \u2194 Altrocentrism",
+        "poles": {
+          "altrocentric": "The frame includes others \u2014 colleagues, team, end-users, community",
+          "selfcentric": "The frame is primarily self-referential \u2014 own stress, goals, workload, feelings"
+        },
+        "sources": [
+          "Maslow, A. (1969). The farther reaches of human nature. Journal of Transpersonal Psychology.",
+          "Batson, C.D. (2011). Altruism in humans. Oxford University Press."
+        ]
+      }
+    ],
+    "signals": {
+      "axis1:internal": "Increment state.axis1.internal by 1",
+      "axis1:external": "Increment state.axis1.external by 1",
+      "axis2:contribution": "Increment state.axis2.contribution by 1",
+      "axis2:entitlement": "Increment state.axis2.entitlement by 1",
+      "axis3:altrocentric": "Increment state.axis3.altrocentric by 1",
+      "axis3:selfcentric": "Increment state.axis3.selfcentric by 1"
+    },
+    "state_schema": {
+      "description": "The full state object maintained by the agent at runtime",
+      "answers": "Record<nodeId: string, selectedOptionId: string> \u2014 every question answer stored by node ID",
+      "axis1": {
+        "internal": 0,
+        "external": 0
+      },
+      "axis2": {
+        "contribution": 0,
+        "entitlement": 0
+      },
+      "axis3": {
+        "altrocentric": 0,
+        "selfcentric": 0
+      }
+    },
+    "dominant_rules": {
+      "description": "How agent computes axis.dominant for condition-based routing. Applied at each decision node that references axis.dominant.",
+      "axis1": "internal > external \u2192 'internal' | external > internal \u2192 'external' | tie \u2192 'internal' (growth-oriented tiebreak)",
+      "axis2": "contribution > entitlement \u2192 'contribution' | entitlement >= contribution \u2192 'entitlement' (surfaces it for reflection)",
+      "axis3": "altrocentric > selfcentric \u2192 'altrocentric' | selfcentric >= altrocentric \u2192 'selfcentric' (conservative default)"
+    },
+    "interpolation_rules": {
+      "description": "Placeholders in 'text' fields are resolved by the agent at render time from state",
+      "syntax": [
+        "{ nodeId.label }    \u2192 short label of the option selected at that question node",
+        "{ nodeId.answer }   \u2192 full text of the option selected at that question node",
+        "{ axis1.dominant }  \u2192 computed dominant pole string for axis 1",
+        "{ axis1.label }     \u2192 human-readable label resolved from summary_data lookup table",
+        "{ axis1.summary }   \u2192 summary sentence resolved from summary_data lookup table",
+        "{ axis2.label }     \u2192 same for axis 2",
+        "{ axis2.summary }   \u2192 same for axis 2",
+        "{ axis3.label }     \u2192 same for axis 3",
+        "{ axis3.summary }   \u2192 same for axis 3",
+        "{ closing_insight } \u2192 text of the first matching entry in closing_insights",
+        "{ nodeId.reflection_label }   \u2192 the reflection_label field of the selected option at nodeId (must be defined on that node's options)",
+        "{ nodeA.reflection_label|nodeB.reflection_label }  \u2192 pipe-fallback: resolve nodeA if visited, else nodeB. Used when a node is reachable from two mutually exclusive question paths."
+      ]
+    },
+    "node_types": {
+      "start": "Opens the session. Displays text. No input. Auto-advances to 'next'.",
+      "question": "Displays text and 3\u20135 fixed options. Waits for employee selection. Records answer to state.answers[nodeId]. Applies signal from selected option to state tallies. Auto-advances to 'next'.",
+      "decision": "Invisible to employee. Evaluates 'routing' conditions in order against current state. Advances to the first matching target. If no condition matches, advance to 'default_target'.",
+      "reflection": "Displays reframe text derived from the path taken. Employee reads and presses Continue. Auto-advances to 'next'.",
+      "bridge": "A short transitional sentence between axes. Displayed briefly. Auto-advances to 'target' (may cross tree hierarchy).",
+      "summary": "End-of-session synthesis. Resolves all interpolation placeholders. Employee reads their personalized reflection summary. Advances to 'next'.",
+      "end": "Closes the session. No further interaction."
+    },
+    "routing_condition_syntax": {
+      "description": "Conditions used inside routing arrays on decision nodes",
+      "examples": [
+        "INTRO_Q.answer == 'A'                   \u2192 true if employee selected option A at INTRO_Q",
+        "INTRO_Q.answer in ['A', 'B']             \u2192 true if selected option is A or B",
+        "axis1.dominant == 'internal'             \u2192 true if computed dominant for axis1 is 'internal'",
+        "axis1.internal >= axis1.external         \u2192 true if internal tally is at least as high as external",
+        "A1_Q2_EXT.answer == 'C'                  \u2192 exact option match on a specific node",
+        "axis3.altrocentric > 0   \u2192 true if altrocentric tally is at least 1 (raw tally check, used where dominant tiebreak would mask a genuine flash)",
+        "axis3.altrocentric == 0  \u2192 true if altrocentric tally is exactly zero (used to confirm zero other-awareness)",
+        "axis2.contribution == axis2.entitlement  \u2192 true if both axis2 tallies are equal (tie case)"
+      ]
+    }
+  },
+  "summary_data": {
+    "description": "Lookup table for summary node interpolation. Agent resolves axis labels and summary sentences from state.axisN.dominant.",
+    "axis1": {
+      "internal": {
+        "label": "more internal",
+        "summary": "You saw your hand in how things went. That's not a personality trait \u2014 it's a practiced stance."
+      },
+      "external": {
+        "label": "more external",
+        "summary": "A lot of today felt like it was happening to you. Somewhere in there, though, you were still making calls."
+      }
+    },
+    "axis2": {
+      "contribution": {
+        "label": "contribution-oriented",
+        "summary": "You gave beyond what was required. Others may not have noticed \u2014 but the effect was real."
+      },
+      "entitlement": {
+        "label": "return-focused",
+        "summary": "Your attention went to what you were getting \u2014 or not getting. Worth seeing clearly, without judgment."
+      }
+    },
+    "axis3": {
+      "altrocentric": {
+        "label": "outward-facing",
+        "summary": "Others were genuinely in your frame today. That's the raw material of meaning."
+      },
+      "selfcentric": {
+        "label": "self-focused",
+        "summary": "Today's frame was mostly your own situation. Tomorrow, you might try widening the lens by one person."
+      }
+    },
+    "closing_insights": [
+      {
+        "condition": "axis1.dominant == 'internal' AND axis2.dominant == 'contribution' AND axis3.dominant == 'altrocentric'",
+        "text": "You showed up with agency, gave without keeping score, and kept others in your view. Days like this are rare. Let yourself notice it."
+      },
+      {
+        "condition": "axis1.dominant == 'external' AND axis2.dominant == 'entitlement' AND axis3.dominant == 'selfcentric'",
+        "text": "Today was a survival day \u2014 and you got through it. The fact that you're here, looking at it honestly, is itself a form of agency. That counts."
+      },
+      {
+        "condition": "axis1.dominant == 'internal' AND axis2.dominant == 'contribution' AND axis3.dominant == 'selfcentric'",
+        "text": "You acted with purpose and gave real effort. The next step might be letting some of that extend outward \u2014 who else benefited today, even indirectly?"
+      },
+      {
+        "condition": "axis1.dominant == 'internal' AND axis2.dominant == 'entitlement' AND axis3.dominant == 'selfcentric'",
+        "text": "You kept your footing today \u2014 that matters. The question for tomorrow: where can some of that steadiness flow outward toward others?"
+      },
+      {
+        "condition": "axis1.dominant == 'external' AND axis2.dominant == 'contribution' AND axis3.dominant == 'altrocentric'",
+        "text": "Even when things didn't feel in your control, you still gave and stayed connected to others. That's a kind of grace under pressure."
+      },
+      {
+        "condition": "axis1.dominant == 'external' AND axis2.dominant == 'contribution' AND axis3.dominant == 'selfcentric'",
+        "text": "You gave effort despite the headwinds \u2014 and that matters. The frame was still mostly your own today. Notice: who else was carrying something similar?"
+      },
+      {
+        "condition": "axis1.dominant == 'external' AND axis2.dominant == 'entitlement' AND axis3.dominant == 'altrocentric'",
+        "text": "Even though today felt out of your hands and the return felt uneven, you still held others in mind. That's not nothing. Agency and generosity can return even from here."
+      },
+      {
+        "condition": "axis1.dominant == 'internal' AND axis2.dominant == 'entitlement' AND axis3.dominant == 'altrocentric'",
+        "text": "You navigated the day with real clarity of action and kept others in view. The thread to pull: did the gap between what you gave and what you received actually close today?"
+      },
+      {
+        "condition": "default",
+        "text": "Every day has these three layers \u2014 how you responded, what you gave, and who was in your view. You looked at all three tonight. That's where growth starts."
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "START",
+      "parentId": null,
+      "type": "start",
+      "text": "Good evening.\n\nThis is your space \u2014 no performance, no scoring, no judgment.\n\nYou'll move through a short reflection on how today actually went. There are no right answers. The only thing that matters is that you pick the option that's genuinely true for you.\n\nIt takes about five minutes.",
+      "next": "INTRO_Q",
+      "parents_note": "Root node \u2014 session entry point. Has no parent."
+    },
+    {
+      "id": "INTRO_Q",
+      "parentId": "START",
+      "type": "question",
+      "text": "Let's start without overthinking it. If today had a weather report, what would it say?",
+      "options": [
+        {
+          "id": "A",
+          "label": "sunny",
+          "text": "Sunny \u2014 things moved, and I moved with them",
+          "signal": null
+        },
+        {
+          "id": "B",
+          "label": "overcast",
+          "text": "Overcast \u2014 got through it, nothing spectacular",
+          "signal": null
+        },
+        {
+          "id": "C",
+          "label": "stormy",
+          "text": "Stormy \u2014 real turbulence today",
+          "signal": null
+        },
+        {
+          "id": "D",
+          "label": "foggy",
+          "text": "Foggy \u2014 couldn't quite see where I was going",
+          "signal": null
+        }
+      ],
+      "next": "INTRO_D"
+    },
+    {
+      "id": "INTRO_D",
+      "parentId": "INTRO_Q",
+      "type": "decision",
+      "note": "Routes lighter days (A, B) to a question about what drove success. Routes harder days (C, D) to a question about the first response to difficulty.",
+      "routing": [
+        {
+          "condition": "INTRO_Q.answer in ['A', 'B']",
+          "target": "A1_Q1_LIGHT"
+        },
+        {
+          "condition": "INTRO_Q.answer in ['C', 'D']",
+          "target": "A1_Q1_HEAVY"
+        }
+      ],
+      "default_target": "A1_Q1_HEAVY"
+    },
+    {
+      "id": "A1_Q1_LIGHT",
+      "parentId": "INTRO_D",
+      "type": "question",
+      "axis": "axis1",
+      "text": "You said today felt {INTRO_Q.label}. Looking back at how you moved through it \u2014 what felt most in your control?",
+      "options": [
+        {
+          "id": "A",
+          "label": "prepared",
+          "text": "I prepared \u2014 it didn't happen by accident",
+          "signal": "axis1:internal"
+        },
+        {
+          "id": "B",
+          "label": "team",
+          "text": "The team came through and we built momentum together",
+          "signal": "axis1:internal"
+        },
+        {
+          "id": "C",
+          "label": "lucky",
+          "text": "Honestly, timing and circumstances worked in my favor",
+          "signal": "axis1:external"
+        },
+        {
+          "id": "D",
+          "label": "adapted",
+          "text": "I stayed flexible when the plan changed",
+          "signal": "axis1:internal"
+        }
+      ],
+      "next": "A1_D1_LIGHT"
+    },
+    {
+      "id": "A1_Q1_HEAVY",
+      "parentId": "INTRO_D",
+      "type": "question",
+      "axis": "axis1",
+      "text": "You said today felt {INTRO_Q.label}. When things got difficult, what was your first move?",
+      "options": [
+        {
+          "id": "A",
+          "label": "controlled",
+          "text": "I looked for what I could still control in the situation",
+          "signal": "axis1:internal"
+        },
+        {
+          "id": "B",
+          "label": "waited",
+          "text": "I waited for things to settle before acting",
+          "signal": "axis1:external"
+        },
+        {
+          "id": "C",
+          "label": "pushed",
+          "text": "I pushed forward even though the path wasn't clear",
+          "signal": "axis1:internal"
+        },
+        {
+          "id": "D",
+          "label": "blocked",
+          "text": "I felt blocked \u2014 it was hard to see a way through",
+          "signal": "axis1:external"
+        }
+      ],
+      "next": "A1_D1_HEAVY"
+    },
+    {
+      "id": "A1_D1_LIGHT",
+      "parentId": "A1_Q1_LIGHT",
+      "type": "decision",
+      "note": "Routes to INT follow-up if answer showed agency (A, B, D). Routes to EXT follow-up if answer showed external attribution (C).",
+      "routing": [
+        {
+          "condition": "A1_Q1_LIGHT.answer in ['A', 'B', 'D']",
+          "target": "A1_Q2_INT"
+        },
+        {
+          "condition": "A1_Q1_LIGHT.answer in ['C']",
+          "target": "A1_Q2_EXT"
+        }
+      ],
+      "default_target": "A1_Q2_INT"
+    },
+    {
+      "id": "A1_D1_HEAVY",
+      "parentId": "A1_Q1_HEAVY",
+      "type": "decision",
+      "note": "Routes to INT follow-up if first response showed agency (A, C). Routes to EXT follow-up if response was passive or blocked (B, D).",
+      "routing": [
+        {
+          "condition": "A1_Q1_HEAVY.answer in ['A', 'C']",
+          "target": "A1_Q2_INT"
+        },
+        {
+          "condition": "A1_Q1_HEAVY.answer in ['B', 'D']",
+          "target": "A1_Q2_EXT"
+        }
+      ],
+      "default_target": "A1_Q2_EXT"
+    },
+    {
+      "id": "A1_Q2_INT",
+      "parentId": null,
+      "parents_note": "Reached from A1_D1_LIGHT (options A,B,D) or A1_D1_HEAVY (options A,C)",
+      "type": "question",
+      "axis": "axis1",
+      "text": "Think of one deliberate decision you made today \u2014 even a small one. What were you protecting or building when you made it?",
+      "options": [
+        {
+          "id": "A",
+          "label": "integrity",
+          "text": "My own standards \u2014 I wasn't willing to cut corners",
+          "signal": "axis1:internal",
+          "reflection_label": "protecting your own standards"
+        },
+        {
+          "id": "B",
+          "label": "trust",
+          "text": "The trust someone placed in me",
+          "signal": "axis1:internal",
+          "reflection_label": "protecting trust someone placed in you"
+        },
+        {
+          "id": "C",
+          "label": "goal",
+          "text": "A goal I've been working toward for a while",
+          "signal": "axis1:internal",
+          "reflection_label": "working toward a longer-term goal"
+        },
+        {
+          "id": "D",
+          "label": "reacting",
+          "text": "I'm not sure \u2014 I was reacting more than choosing today",
+          "signal": "axis1:external",
+          "reflection_label": "mostly in reactive mode"
+        }
+      ],
+      "next": "A1_D2_INT"
+    },
+    {
+      "id": "A1_Q2_EXT",
+      "parentId": null,
+      "parents_note": "Reached from A1_D1_LIGHT (option C) or A1_D1_HEAVY (options B,D)",
+      "type": "question",
+      "axis": "axis1",
+      "text": "When the situation felt out of your hands, what did you do with that feeling?",
+      "options": [
+        {
+          "id": "A",
+          "label": "vented",
+          "text": "I vented \u2014 it needed to get out",
+          "signal": "axis1:external",
+          "reflection_label": "let it out \u2014 and then kept going"
+        },
+        {
+          "id": "B",
+          "label": "waited",
+          "text": "I stepped back and let someone else take the lead",
+          "signal": "axis1:external",
+          "reflection_label": "sat with it and waited for the pressure to ease"
+        },
+        {
+          "id": "C",
+          "label": "found",
+          "text": "I found one small thing I could still do",
+          "signal": "axis1:internal",
+          "reflection_label": "found one small thing you could still act on"
+        },
+        {
+          "id": "D",
+          "label": "detached",
+          "text": "I felt stuck \u2014 I couldn't find a way through and didn't move forward",
+          "signal": "axis1:external",
+          "reflection_label": "stepped back and decided some things weren't worth fighting"
+        }
+      ],
+      "next": "A1_D2_EXT"
+    },
+    {
+      "id": "A1_D2_INT",
+      "parentId": "A1_Q2_INT",
+      "type": "decision",
+      "note": "Checks accumulated axis1 tally after both Q1 and Q2 on the internal-entry path.",
+      "routing": [
+        {
+          "condition": "axis1.internal >= axis1.external",
+          "target": "A1_R_INT"
+        },
+        {
+          "condition": "axis1.external > axis1.internal",
+          "target": "A1_R_MIX"
+        }
+      ],
+      "default_target": "A1_R_INT"
+    },
+    {
+      "id": "A1_D2_EXT",
+      "parentId": "A1_Q2_EXT",
+      "type": "decision",
+      "note": "If the employee found one thing they could do (C), they showed a flash of agency on the external path \u2014 route to MIX. Otherwise, route to full external reflection.",
+      "routing": [
+        {
+          "condition": "A1_Q2_EXT.answer == 'C'",
+          "target": "A1_R_MIX"
+        },
+        {
+          "condition": "A1_Q2_EXT.answer in ['A', 'B', 'D']",
+          "target": "A1_R_EXT"
+        }
+      ],
+      "default_target": "A1_R_EXT"
+    },
+    {
+      "id": "A1_R_INT",
+      "parentId": "A1_D2_INT",
+      "type": "reflection",
+      "axis": "axis1",
+      "text": "You kept a hand on the wheel today \u2014 you were {A1_Q2_INT.reflection_label}.\n\nThat's not a personality type. It's a practiced stance. Agency isn't about controlling outcomes; it's about owning your response to whatever comes. You did that today.",
+      "next": "BRIDGE_1_2_A"
+    },
+    {
+      "id": "A1_R_EXT",
+      "parentId": "A1_D2_EXT",
+      "type": "reflection",
+      "axis": "axis1",
+      "text": "A lot of today felt like it was happening to you \u2014 and sometimes that's simply true.\n\nYou {A1_Q2_EXT.reflection_label}. That's still a choice, even if it didn't feel like one at the time. Somewhere in today, you were making calls \u2014 the question is just whether you noticed them as yours.",
+      "next": "BRIDGE_1_2_B"
+    },
+    {
+      "id": "A1_R_MIX",
+      "parentId": null,
+      "parents_note": "Reached from A1_D2_INT (external>internal on INT path) or A1_D2_EXT (option C \u2014 flash of agency on EXT path)",
+      "type": "reflection",
+      "axis": "axis1",
+      "text": "Today was a mixed picture \u2014 parts felt in your hands, parts didn't.\n\nAt some point you were {A1_Q2_INT.reflection_label|A1_Q2_EXT.reflection_label}. That's usually the honest truth. The question isn't whether you controlled everything \u2014 it's whether you noticed where you did have a choice, even a small one.",
+      "next": "BRIDGE_1_2_C",
+      "interpolation_note": "The placeholder {A1_Q2_INT.reflection_label|A1_Q2_EXT.reflection_label} uses pipe-fallback syntax: resolve A1_Q2_INT.reflection_label if that node was visited; otherwise resolve A1_Q2_EXT.reflection_label. Exactly one of these two nodes will always be in the conversation path."
+    },
+    {
+      "id": "BRIDGE_1_2_A",
+      "parentId": "A1_R_INT",
+      "type": "bridge",
+      "text": "Good. Now let's shift the lens \u2014 from how you responded, to what you gave.",
+      "target": "A2_Q1"
+    },
+    {
+      "id": "BRIDGE_1_2_B",
+      "parentId": "A1_R_EXT",
+      "type": "bridge",
+      "text": "Alright. You said today felt {INTRO_Q.label}, and a lot of it landed on you. Let's look at what you brought to others anyway.",
+      "target": "A2_Q1"
+    },
+    {
+      "id": "BRIDGE_1_2_C",
+      "parentId": "A1_R_MIX",
+      "type": "bridge",
+      "text": "Let's look at something different now \u2014 not how you responded, but what you gave.",
+      "target": "A2_Q1"
+    },
+    {
+      "id": "A2_Q1",
+      "parentId": null,
+      "parents_note": "Reached from all three BRIDGE_1_2 variants (A, B, C) via their 'target' field",
+      "type": "question",
+      "axis": "axis2",
+      "text": "Think about your interactions today. Which of these feels most true?",
+      "options": [
+        {
+          "id": "A",
+          "label": "helped",
+          "text": "I helped someone with something that wasn't my job to fix",
+          "signal": "axis2:contribution",
+          "reflection_label": "helped someone past the edge of your own responsibilities"
+        },
+        {
+          "id": "B",
+          "label": "unequal",
+          "text": "I did my work well \u2014 but felt others weren't pulling equal weight",
+          "signal": "axis2:entitlement",
+          "reflection_label": "felt the weight of uneven effort"
+        },
+        {
+          "id": "C",
+          "label": "stepped-in",
+          "text": "I noticed a gap and stepped into it before anyone asked",
+          "signal": "axis2:contribution",
+          "reflection_label": "spotted a gap and stepped into it"
+        },
+        {
+          "id": "D",
+          "label": "unnoticed",
+          "text": "I worked hard and felt like it went largely unnoticed",
+          "signal": "axis2:entitlement",
+          "reflection_label": "did solid work and felt like it landed in silence"
+        }
+      ],
+      "next": "A2_D1"
+    },
+    {
+      "id": "A2_D1",
+      "parentId": "A2_Q1",
+      "type": "decision",
+      "note": "Routes to contribution follow-up (A,C) or entitlement follow-up (B,D).",
+      "routing": [
+        {
+          "condition": "A2_Q1.answer in ['A', 'C']",
+          "target": "A2_Q2_CONTRIB"
+        },
+        {
+          "condition": "A2_Q1.answer in ['B', 'D']",
+          "target": "A2_Q2_ENTITLE"
+        }
+      ],
+      "default_target": "A2_Q2_ENTITLE"
+    },
+    {
+      "id": "A2_Q2_CONTRIB",
+      "parentId": "A2_D1",
+      "type": "question",
+      "axis": "axis2",
+      "text": "What made you reach beyond your own workload today?",
+      "options": [
+        {
+          "id": "A",
+          "label": "obvious",
+          "text": "I saw someone struggling and it was obvious what to do",
+          "signal": "axis2:contribution"
+        },
+        {
+          "id": "B",
+          "label": "quiet-right",
+          "text": "I knew it was the right thing, even if no one would notice",
+          "signal": "axis2:contribution"
+        },
+        {
+          "id": "C",
+          "label": "hoped",
+          "text": "I hoped it would be recognized or returned down the line",
+          "signal": "axis2:entitlement"
+        },
+        {
+          "id": "D",
+          "label": "right-person",
+          "text": "The team needed it and I was the right person in that moment",
+          "signal": "axis2:contribution"
+        }
+      ],
+      "next": "A2_D2_CONTRIB"
+    },
+    {
+      "id": "A2_Q2_ENTITLE",
+      "parentId": "A2_D1",
+      "type": "question",
+      "axis": "axis2",
+      "text": "When you felt under-recognized or like effort wasn't distributed fairly \u2014 what did that lead you to do?",
+      "options": [
+        {
+          "id": "A",
+          "label": "held-level",
+          "text": "I kept showing up at the same level regardless",
+          "signal": "axis2:contribution"
+        },
+        {
+          "id": "B",
+          "label": "dialled-back",
+          "text": "I matched my effort to what the situation seemed to call for",
+          "signal": "axis2:entitlement"
+        },
+        {
+          "id": "C",
+          "label": "spoke-up",
+          "text": "I made my contribution visible \u2014 named it or asked for feedback",
+          "signal": "axis2:contribution"
+        },
+        {
+          "id": "D",
+          "label": "stayed-in",
+          "text": "I stayed in the frustration for most of the day",
+          "signal": "axis2:entitlement"
+        }
+      ],
+      "next": "A2_D2_ENTITLE"
+    },
+    {
+      "id": "A2_D2_CONTRIB",
+      "parentId": "A2_Q2_CONTRIB",
+      "type": "decision",
+      "note": "Uses accumulated axis2 tally after both questions on the contribution-entry path. dominant_rule: contribution > entitlement \u2192 'contribution', else \u2192 'entitlement'.",
+      "routing": [
+        {
+          "condition": "axis2.contribution == axis2.entitlement",
+          "target": "A2_R_MIX"
+        },
+        {
+          "condition": "axis2.dominant == 'contribution'",
+          "target": "A2_R_CONTRIB"
+        },
+        {
+          "condition": "axis2.dominant == 'entitlement'",
+          "target": "A2_R_ENTITLE"
+        }
+      ],
+      "default_target": "A2_R_CONTRIB"
+    },
+    {
+      "id": "A2_D2_ENTITLE",
+      "parentId": "A2_Q2_ENTITLE",
+      "type": "decision",
+      "note": "Uses accumulated axis2 tally after both questions on the entitlement-entry path. If employee chose A or C, they may have crossed to contribution-dominant.",
+      "routing": [
+        {
+          "condition": "axis2.contribution == axis2.entitlement",
+          "target": "A2_R_MIX"
+        },
+        {
+          "condition": "axis2.dominant == 'contribution'",
+          "target": "A2_R_CONTRIB"
+        },
+        {
+          "condition": "axis2.dominant == 'entitlement'",
+          "target": "A2_R_ENTITLE"
+        }
+      ],
+      "default_target": "A2_R_ENTITLE"
+    },
+    {
+      "id": "A2_R_CONTRIB",
+      "parentId": null,
+      "parents_note": "Reached from A2_D2_CONTRIB or A2_D2_ENTITLE when contribution is dominant",
+      "type": "reflection",
+      "axis": "axis2",
+      "text": "You {A2_Q1.reflection_label} today \u2014 and that kind of move doesn't show up in any job description.\n\nMost people operate inside the exact boundary of their role and call it done. Stepping beyond that \u2014 especially when it isn't visible or rewarded \u2014 is how teams actually hold together.",
+      "next": "BRIDGE_2_3_A"
+    },
+    {
+      "id": "A2_R_ENTITLE",
+      "parentId": null,
+      "parents_note": "Reached from A2_D2_CONTRIB or A2_D2_ENTITLE when entitlement is dominant",
+      "type": "reflection",
+      "axis": "axis2",
+      "text": "You {A2_Q1.reflection_label} today \u2014 and that feeling is worth sitting with honestly.\n\nBefore moving on: is there something you contributed that you might be undervaluing? Sometimes the things we give without fanfare don't even register in our own minds as 'contributions.'",
+      "next": "BRIDGE_2_3_B"
+    },
+    {
+      "id": "BRIDGE_2_3_A",
+      "parentId": "A2_R_CONTRIB",
+      "type": "bridge",
+      "text": "Now let's zoom out even further \u2014 from what you gave, to who was in your view today.",
+      "target": "A3_Q1"
+    },
+    {
+      "id": "BRIDGE_2_3_B",
+      "parentId": "A2_R_ENTITLE",
+      "type": "bridge",
+      "text": "Let's step back one more time \u2014 from what you felt you received, to what others around you experienced today.",
+      "target": "A3_Q1"
+    },
+    {
+      "id": "A3_Q1",
+      "parentId": null,
+      "parents_note": "Reached from BRIDGE_2_3_A or BRIDGE_2_3_B via their 'target' field",
+      "type": "question",
+      "axis": "axis3",
+      "text": "When you picture the most significant moment of your day, who else is in that picture?",
+      "options": [
+        {
+          "id": "C",
+          "label": "colleague",
+          "text": "A specific colleague whose situation I was aware of",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "D",
+          "label": "end-user",
+          "text": "The person at the other end of our work \u2014 user, client, or community",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "B",
+          "label": "my-team",
+          "text": "My immediate team \u2014 we were navigating something together",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "A",
+          "label": "just-me",
+          "text": "Mostly just me \u2014 I was working through something on my own",
+          "signal": "axis3:selfcentric"
+        }
+      ],
+      "next": "A3_D1"
+    },
+    {
+      "id": "A3_D1",
+      "parentId": "A3_Q1",
+      "type": "decision",
+      "note": "Routes to self-centric follow-up if the frame was self-only (A). Routes to altrocentric follow-up if others were in the picture (B, C, D).",
+      "routing": [
+        {
+          "condition": "A3_Q1.answer == 'A'",
+          "target": "A3_Q2_SELF"
+        },
+        {
+          "condition": "A3_Q1.answer in ['B', 'C', 'D']",
+          "target": "A3_Q2_OTHER"
+        }
+      ],
+      "default_target": "A3_Q2_SELF"
+    },
+    {
+      "id": "A3_Q2_SELF",
+      "parentId": "A3_D1",
+      "type": "question",
+      "axis": "axis3",
+      "text": "When the day ended and you stepped back even slightly \u2014 was there a moment where someone else's situation crossed your mind?",
+      "options": [
+        {
+          "id": "A",
+          "label": "colleague-thought",
+          "text": "Yes \u2014 I thought about how a specific colleague was holding up",
+          "signal": "axis3:altrocentric",
+          "reflection_label": "a colleague crossing your mind \u2014 wondering how they were holding up"
+        },
+        {
+          "id": "B",
+          "label": "user-thought",
+          "text": "Yes \u2014 I wondered how our work actually lands for the people receiving it",
+          "signal": "axis3:altrocentric",
+          "reflection_label": "a moment of wondering how your work actually lands for the people receiving it"
+        },
+        {
+          "id": "C",
+          "label": "too-in-head",
+          "text": "Not really \u2014 I was too deep in my own situation to go there",
+          "signal": "axis3:selfcentric",
+          "reflection_label": "too deep in your own situation to go there"
+        },
+        {
+          "id": "D",
+          "label": "noticed-no-capacity",
+          "text": "I noticed something but didn't have the capacity to engage with it",
+          "signal": "axis3:selfcentric",
+          "reflection_label": "something on the edge of your awareness \u2014 but without the capacity to go toward it"
+        }
+      ],
+      "next": "A3_D2_SELF"
+    },
+    {
+      "id": "A3_Q2_OTHER",
+      "parentId": "A3_D1",
+      "type": "question",
+      "axis": "axis3",
+      "text": "Thinking about the people you just mentioned \u2014 did anything shift for them today because you were there?",
+      "options": [
+        {
+          "id": "A",
+          "label": "saw-it",
+          "text": "I think so \u2014 I could see it in how they responded",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "B",
+          "label": "tried",
+          "text": "Maybe \u2014 I can't be sure, but I tried to be present for them",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "C",
+          "label": "just-right",
+          "text": "I wasn't tracking the effect \u2014 I just did what felt right",
+          "signal": "axis3:altrocentric"
+        },
+        {
+          "id": "D",
+          "label": "caught-in-own",
+          "text": "Probably not \u2014 I got caught in my own things and lost the thread",
+          "signal": "axis3:selfcentric"
+        }
+      ],
+      "next": "A3_D2_OTHER"
+    },
+    {
+      "id": "A3_D2_SELF",
+      "parentId": "A3_Q2_SELF",
+      "type": "decision",
+      "note": "After two axis3 questions on the self-centric entry path (A3_Q1=A, selfcentric=1 at entry). Uses RAW TALLY (not dominant) because tiebreaks would always resolve to selfcentric: if employee showed ANY altrocentric flash at Q2 (options A or B \u2192 altrocentric=1), route to MIX. If employee gave no altrocentric signal at all (options C or D \u2192 altrocentric=0), route to SELF.",
+      "routing": [
+        {
+          "condition": "axis3.altrocentric > 0",
+          "target": "A3_R_MIX"
+        },
+        {
+          "condition": "axis3.altrocentric == 0",
+          "target": "A3_R_SELF"
+        }
+      ],
+      "default_target": "A3_R_SELF"
+    },
+    {
+      "id": "A3_D2_OTHER",
+      "parentId": "A3_Q2_OTHER",
+      "type": "decision",
+      "note": "After two axis3 questions via the altrocentric entry path. If employee chose D (lost the thread), tally is 1:1 \u2014 selfcentric tiebreak per dominant_rule \u2192 selfcentric \u2192 MIX reflection.",
+      "routing": [
+        {
+          "condition": "axis3.dominant == 'altrocentric'",
+          "target": "A3_R_OTHER"
+        },
+        {
+          "condition": "axis3.dominant == 'selfcentric'",
+          "target": "A3_R_MIX"
+        }
+      ],
+      "default_target": "A3_R_OTHER"
+    },
+    {
+      "id": "A3_R_SELF",
+      "parentId": "A3_D2_SELF",
+      "type": "reflection",
+      "axis": "axis3",
+      "text": "Today's frame was mostly your own \u2014 and sometimes that's genuinely all you have to give.\n\nYou noticed {A3_Q2_SELF.reflection_label}. Here's one thing to carry into tomorrow: is there one person in your orbit who you know is carrying something right now? Not to fix it. Just to notice them. That's where the radius starts to expand.",
+      "next": "SUMMARY"
+    },
+    {
+      "id": "A3_R_OTHER",
+      "parentId": "A3_D2_OTHER",
+      "type": "reflection",
+      "axis": "axis3",
+      "text": "Others were genuinely in your view today \u2014 not as obstacles or background, but as real people with real situations.\n\nThat orientation \u2014 the awareness that your work and presence touch actual people \u2014 is where meaning tends to live. You found some of that today.",
+      "next": "SUMMARY"
+    },
+    {
+      "id": "A3_R_MIX",
+      "parentId": null,
+      "parents_note": "Reached from: (a) A3_D2_SELF when employee showed any altrocentric flash (options A or B at A3_Q2_SELF \u2192 axis3.altrocentric > 0). (b) A3_D2_OTHER when employee lost the thread (option D at A3_Q2_OTHER \u2192 1:1 tally \u2192 selfcentric dominant).",
+      "type": "reflection",
+      "axis": "axis3",
+      "text": "You moved between self-focus and other-awareness today \u2014 and that's the honest version of most days.\n\nThe capacity to step outside your own frame, even briefly, is what separates a manageable day from a meaningful one. You did it, at least in part. That's worth something.",
+      "next": "SUMMARY"
+    },
+    {
+      "id": "SUMMARY",
+      "parentId": null,
+      "parents_note": "Reached from A3_R_SELF, A3_R_OTHER, or A3_R_MIX",
+      "type": "summary",
+      "note": "All placeholders resolved from state at render time using summary_data lookup table and closing_insights array. closing_insight resolves to the first matching condition in closing_insights, evaluated top-to-bottom. 'default' matches always.",
+      "text": "Here's what today looked like through three lenses.\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nAgency ({axis1.label})\n{axis1.summary}\n\nContribution ({axis2.label})\n{axis2.summary}\n\nRadius ({axis3.label})\n{axis3.summary}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n{closing_insight}",
+      "next": "END"
+    },
+    {
+      "id": "END",
+      "parentId": "SUMMARY",
+      "type": "end",
+      "text": "See you tomorrow."
+    },
+    {
+      "id": "A2_R_MIX",
+      "parentId": null,
+      "parents_note": "Reached from A2_D2_CONTRIB or A2_D2_ENTITLE when axis2 tally is exactly tied (1:1)",
+      "type": "reflection",
+      "axis": "axis2",
+      "text": "You gave something today \u2014 and there was also a moment where the return mattered to you.\n\nThat's the honest version of most working days. The question isn't which one dominated. It's whether you noticed both \u2014 the giving and the wanting. You did.",
+      "next": "BRIDGE_2_3_A"
+    }
+  ]
+}
